@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI Resume Analyzer</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--text:#1b1f2a;--muted:#667085;--line:#e4e7ee;--accent:#4f46e5;--accent-t:#fff;--good:#16a34a;--warn:#d97706;--bad:#dc2626;--chip:#eef2ff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1117;--card:#181b24;--text:#e8eaf0;--muted:#98a2b3;--line:#2a2f3b;--accent:#818cf8;--accent-t:#0f1117;--chip:#23263a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1117;--card:#181b24;--text:#e8eaf0;--muted:#98a2b3;--line:#2a2f3b;--accent:#818cf8;--accent-t:#0f1117;--chip:#23263a;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:26px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+label{display:block;font-weight:600;margin-bottom:6px}
+textarea{width:100%;min-height:200px;resize:vertical;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--bg);color:var(--text);font:inherit}
+textarea.jd{min-height:90px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+button,.btn{background:var(--accent);color:var(--accent-t);border:0;border-radius:10px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer}
+button.ghost,.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+button:disabled{opacity:.55;cursor:not-allowed}
+.err{color:var(--bad);margin-top:10px}
+.score{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.ring{width:110px;height:110px;border-radius:50%;display:grid;place-items:center;font-size:30px;font-weight:700}
+.ring span{background:var(--card);width:84px;height:84px;border-radius:50%;display:grid;place-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+h3{margin:0 0 8px;font-size:16px}
+ul{margin:0;padding-left:20px}li{margin-bottom:5px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:var(--chip);border-radius:999px;padding:3px 11px;font-size:13px}
+.bar{height:8px;border-radius:99px;background:var(--line);overflow:hidden;margin:4px 0 12px}
+.bar i{display:block;height:100%;border-radius:99px}
+.small{font-size:13px;color:var(--muted)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script>
+const { useState, useEffect, useRef } = React;
+const html = htm.bind(React.createElement);
+
+const col = n => n >= 75 ? "var(--good)" : n >= 50 ? "var(--warn)" : "var(--bad)";
+
+const PROMPT = (resume, jd) => `You are an expert recruiter and resume coach. Analyze the resume below${jd ? " against the job description" : ""}.
+Respond with ONLY a JSON object, no markdown, in this exact shape:
+{"overallScore":0-100,"summary":"2 sentences","sections":{"Content":0-100,"Impact & metrics":0-100,"Clarity & formatting":0-100,"ATS friendliness":0-100${jd ? ',"Job match":0-100' : ""}},"strengths":["..."],"weaknesses":["..."],"keywords":{"found":["..."],"missing":["..."]},"suggestions":["specific, actionable rewrite or fix"]}
+Give 3-5 items for strengths, weaknesses and suggestions. Be honest and specific; do not invent facts about the candidate.
+
+RESUME:
+${resume}
+${jd ? "\nJOB DESCRIPTION:\n" + jd : ""}`;
+
+function Ring({ value }) {
+  const c = col(value);
+  return html`<div class="ring" style=${{ background: `conic-gradient(${c} ${value * 3.6}deg, var(--line) 0)` }}><span style=${{ color: c }}>${value}</span></div>`;
+}
+
+function List({ title, items }) {
+  return html`<div class="card"><h3>${title}</h3><ul>${(items || []).map((t, i) => html`<li key=${i}>${t}</li>`)}</ul></div>`;
+}
+
+function App() {
+  const [resume, setResume] = useState("");
+  const [jd, setJd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+  const [sample, setSample] = useState(undefined);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { const s = await window.claude.use("sample"); if (alive) setSample(s || null); }
+      catch (e) { if (alive) setSample(null); }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const onFile = e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (!/\.(txt|md)$/i.test(f.name) && !f.type.startsWith("text/")) {
+      setError("Please upload a .txt or .md file, or paste your resume text. (PDF isn’t supported here.)");
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => { setResume(String(r.result || "")); setError(""); };
+    r.readAsText(f);
+  };
+
+  const analyze = async () => {
+    setError(""); setResult(null);
+    if (resume.trim().length < 80) { setError("Please paste a fuller resume (at least a few lines)."); return; }
+    if (!sample) { setError("The AI analyzer isn’t available in this view."); return; }
+    setBusy(true);
+    try {
+      const out = await sample.json(PROMPT(resume.trim().slice(0, 12000), jd.trim().slice(0, 4000)), { cache: false, modelTier: "default" });
+      setResult(out);
+    } catch (e) {
+      setError(e && e.code === "rate_limited" ? "Too many requests, please wait a moment." :
+               e && e.code === "not_granted" ? "Permission to use AI was declined." :
+               "Analysis failed. Please try again.");
+    } finally { setBusy(false); }
+  };
+
+  const reset = () => { setResult(null); setError(""); };
+
+  return html`<div class="wrap">
+    <h1>AI Resume Analyzer</h1>
+    <p class="sub">Paste your resume (and optionally a job description) to get a score, keyword gaps and concrete fixes.</p>
+
+    <div class=${"card" + (result ? " hide" : "")}>
+      <label for="resume">Resume text</label>
+      <textarea id="resume" value=${resume} onChange=${e => setResume(e.target.value)} placeholder="Paste your resume here…"></textarea>
+      <div class="row">
+        <input ref=${fileRef} type="file" accept=".txt,.md,text/plain" class="hide" onChange=${onFile} />
+        <button class="ghost" onClick=${() => fileRef.current.click()}>Upload .txt</button>
+        <span class="small">${resume.length.toLocaleString()} characters</span>
+      </div>
+      <div style=${{ marginTop: 16 }}>
+        <label for="jd">Target job description <span class="small">(optional)</span></label>
+        <textarea id="jd" class="jd" value=${jd} onChange=${e => setJd(e.target.value)} placeholder="Paste a job posting to check keyword match…"></textarea>
+      </div>
+      <div class="row">
+        <button onClick=${analyze} disabled=${busy || sample === null}>${busy ? "Analyzing…" : "Analyze resume"}</button>
+        ${sample === null && html`<span class="small">AI isn’t available in this view.</span>`}
+      </div>
+      ${error && html`<div class="err">${error}</div>`}
+    </div>
+
+    ${result && html`<div>
+      <div class="card score">
+        <${Ring} value=${Math.round(result.overallScore || 0)} />
+        <div style=${{ flex: 1, minWidth: 220 }}>
+          <h3>Overall score</h3>
+          <div>${result.summary}</div>
+        </div>
+        <button class="ghost" onClick=${reset}>Edit & re-run</button>
+      </div>
+
+      <div class="card">
+        <h3>Section scores</h3>
+        ${Object.entries(result.sections || {}).map(([k, v]) => html`<div key=${k}>
+          <div style=${{ display: "flex", justifyContent: "space-between" }}><span>${k}</span><b>${v}</b></div>
+          <div class="bar"><i style=${{ width: v + "%", background: col(v) }}></i></div>
+        </div>`)}
+      </div>
+
+      <div class="grid">
+        <${List} title="Strengths" items=${result.strengths} />
+        <${List} title="Weaknesses" items=${result.weaknesses} />
+      </div>
+
+      <div class="grid">
+        <div class="card"><h3>Keywords found</h3><div class="chips">${((result.keywords || {}).found || []).map(k => html`<span class="chip" key=${k}>${k}</span>`)}</div></div>
+        <div class="card"><h3>Keywords to add</h3><div class="chips">${((result.keywords || {}).missing || []).map(k => html`<span class="chip" key=${k}>${k}</span>`)}</div></div>
+      </div>
+
+      <${List} title="Suggested improvements" items=${result.suggestions} />
+      <p class="small">AI feedback is a starting point, not a guarantee. Review every suggestion against your real experience.</p>
+    </div>`}
+  </div>`;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App} />`);
+</script>
+</body>
+</html>
